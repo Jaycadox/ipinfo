@@ -1,6 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::Display,
     io::{Cursor, Read, Seek, SeekFrom},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num::TryFromIntError,
@@ -39,8 +40,9 @@ impl<T: Read + Seek> Mmdb<T> {
             128_000.. => file_size - 128_000,
         };
 
-        reader.seek(std::io::SeekFrom::Start(start_byte))?;
-        let mut contents = vec![0; 128_000];
+        let tail_len = (file_size - start_byte) as usize;
+        let mut contents = vec![0u8; tail_len];
+        reader.seek(SeekFrom::Start(start_byte))?;
         reader.read_exact(&mut contents)?;
 
         static METADATA_MARKER: &[u8] = b"\xAB\xCD\xEFMaxMind.com";
@@ -102,6 +104,7 @@ impl<T: Read + Seek> Mmdb<T> {
     }
 
     pub fn query_ip_uint(&mut self, ip: u128, num_bits: usize) -> Result<Option<Type>, MmdbError> {
+        self.reader.seek(SeekFrom::Start(0))?;
         for i in (0..num_bits).rev() {
             let bit = match (ip >> i) & 1 {
                 1 => true,
@@ -212,7 +215,7 @@ pub enum Type {
     S32(i32),
     U64(u64),
     U128(u128),
-    Map(HashMap<String, Type>),
+    Map(BTreeMap<String, Type>),
     Array(Vec<Type>),
     DataCacheContainer,
     EndMarker,
@@ -220,91 +223,101 @@ pub enum Type {
     Float(f32),
 }
 
-pub fn pretty_print_type(typ: &Type, indentation: usize) {
-    match typ {
-        Type::Utf8String(x) => print!("{x}"),
-        Type::Double(x) => print!("{x}"),
-        Type::Bytes(items) => {
-            print!("[");
-            let mut items = items.iter().peekable();
-            while let Some(byte) = items.next() {
-                let last = items.peek().is_none();
-                print!("{byte:0X}");
-                if !last {
-                    print!(", ");
+impl Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        pub fn pretty_print_type(
+            typ: &Type,
+            indentation: usize,
+            f: &mut std::fmt::Formatter<'_>,
+        ) -> std::fmt::Result {
+            match typ {
+                Type::Utf8String(x) => write!(f, "{x}"),
+                Type::Double(x) => write!(f, "{x}"),
+                Type::Bytes(items) => {
+                    write!(f, "[")?;
+                    let mut items = items.iter().peekable();
+                    while let Some(byte) = items.next() {
+                        let last = items.peek().is_none();
+                        write!(f, "{byte:0X}")?;
+                        if !last {
+                            write!(f, ", ")?;
+                        }
+                    }
+                    write!(f, "]")
                 }
+                Type::U16(x) => write!(f, "{x}"),
+                Type::U32(x) => write!(f, "{x}"),
+                Type::S32(x) => write!(f, "{x}"),
+                Type::U64(x) => write!(f, "{x}"),
+                Type::U128(x) => write!(f, "{x}"),
+                Type::Map(hash_map) => {
+                    let mut known_pretty_names = HashMap::new();
+                    known_pretty_names.insert("asn", "ASN");
+                    known_pretty_names.insert("country_code", "Country Code");
+                    known_pretty_names.insert("domain", "Domain");
+                    known_pretty_names.insert("name", "Name");
+                    known_pretty_names.insert("network", "Network");
+                    known_pretty_names.insert("org", "Organization");
+
+                    let indentation = match indentation {
+                        0 => 0,
+                        x => x + 1,
+                    };
+
+                    if indentation != 0 {
+                        writeln!(f, "{{")?;
+                        for _ in 0..indentation {
+                            write!(f, "\t")?;
+                        }
+                    }
+
+                    let mut hash_map = hash_map.iter().peekable();
+
+                    while let Some((key, value)) = hash_map.next() {
+                        let key = match known_pretty_names.get(&key.as_str()) {
+                            Some(name) => name,
+                            None => key.as_str(),
+                        };
+                        let last = hash_map.peek().is_none();
+                        for _ in 0..indentation {
+                            write!(f, "\t")?;
+                        }
+                        write!(f, "{key}: ")?;
+                        pretty_print_type(value, indentation, f)?;
+                        if !last {
+                            writeln!(f, ",")?;
+                        }
+                    }
+
+                    if indentation != 0 {
+                        for _ in 0..indentation {
+                            write!(f, "\t")?;
+                        }
+                        writeln!(f, "}}")
+                    } else {
+                        writeln!(f)
+                    }
+                }
+                Type::Array(items) => {
+                    write!(f, "[")?;
+                    let mut items = items.iter().peekable();
+                    while let Some(value) = items.next() {
+                        let last = items.peek().is_none();
+                        pretty_print_type(value, indentation, f)?;
+                        if !last {
+                            write!(f, ", ")?;
+                        }
+                    }
+                    write!(f, "]")
+                }
+                Type::DataCacheContainer => write!(f, "[data cache container]"),
+                Type::EndMarker => write!(f, "[end marker]"),
+                Type::Boolean(x) => write!(f, "{x}"),
+                Type::Float(x) => write!(f, "{x}"),
             }
-            print!("]");
         }
-        Type::U16(x) => print!("{x}"),
-        Type::U32(x) => print!("{x}"),
-        Type::S32(x) => print!("{x}"),
-        Type::U64(x) => print!("{x}"),
-        Type::U128(x) => print!("{x}"),
-        Type::Map(hash_map) => {
-            let mut known_pretty_names = HashMap::new();
-            known_pretty_names.insert("asn", "ASN");
-            known_pretty_names.insert("country_code", "Country Code");
-            known_pretty_names.insert("domain", "Domain");
-            known_pretty_names.insert("name", "Name");
-            known_pretty_names.insert("network", "Network");
-            known_pretty_names.insert("org", "Organization");
-
-            let indentation = match indentation {
-                0 => 0,
-                x => x + 1,
-            };
-
-            if indentation != 0 {
-                println!("{{");
-                for _ in 0..indentation {
-                    print!("\t");
-                }
-            }
-            let hash_map: BTreeMap<_, _> = hash_map.clone().into_iter().collect();
-            let mut hash_map = hash_map.iter().peekable();
-
-            while let Some((key, value)) = hash_map.next() {
-                let key = match known_pretty_names.get(&key.as_str()) {
-                    Some(name) => name,
-                    None => key.as_str(),
-                };
-                let last = hash_map.peek().is_none();
-                for _ in 0..indentation {
-                    print!("\t");
-                }
-                print!("{key}: ");
-                pretty_print_type(value, indentation);
-                if !last {
-                    println!(",");
-                }
-            }
-
-            if indentation != 0 {
-                for _ in 0..indentation {
-                    print!("\t");
-                }
-                println!("}}");
-            } else {
-                println!();
-            }
-        }
-        Type::Array(items) => {
-            print!("[");
-            let mut items = items.iter().peekable();
-            while let Some(value) = items.next() {
-                let last = items.peek().is_none();
-                pretty_print_type(value, indentation);
-                if !last {
-                    print!(", ");
-                }
-            }
-            print!("]");
-        }
-        Type::DataCacheContainer => print!("[data cache container]"),
-        Type::EndMarker => print!("[end marker]"),
-        Type::Boolean(x) => print!("{x}"),
-        Type::Float(x) => print!("{x}"),
+        pretty_print_type(self, 0, f)?;
+        std::fmt::Result::Ok(())
     }
 }
 
@@ -462,7 +475,7 @@ where
             _ => Err(MmdbError::InvalidData("bad s32 size")),
         },
         7 => {
-            let mut items = HashMap::new();
+            let mut items = BTreeMap::new();
             for _ in 0..size {
                 let key = match read_type(reader, metadata)? {
                     Type::Utf8String(key) => key,

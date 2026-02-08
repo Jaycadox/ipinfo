@@ -67,7 +67,7 @@ fn main() {
 
     match typ {
         Some(typ) => {
-            mmdb::pretty_print_type(&typ, 0);
+            println!("{typ}");
         }
         None => {
             println!("No data found");
