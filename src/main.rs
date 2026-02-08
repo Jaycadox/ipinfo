@@ -4,14 +4,31 @@ use std::{fs::File, io::BufReader, net::IpAddr, str::FromStr};
 mod mmdb;
 
 fn main() {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut verbose = false;
+    let mut args = std::env::args();
+    let program = args.next().unwrap();
+    let program = std::path::Path::new(&program);
+    let program = program.file_name().unwrap().to_string_lossy();
+
+    let args = args
+        .filter(|x| {
+            if x == "-v" || x == "--verbose" {
+                verbose = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
     if args.len() != 1 && args.len() != 2 {
-        eprintln!("ipinfo");
-        eprintln!("USAGE: ipinfo <ip address> (mmdb_path)");
-        eprintln!("   eg. ipinfo 1.1.1.1");
-        eprintln!("   eg. ipinfo 1.1.1.1 ./ip_to_country.mmdb");
+        eprintln!("{program} -- locally query ip information via a MMDB database");
+        eprintln!("USAGE: {program} <ip address> (mmdb_path)");
+        eprintln!("   eg. {program} 1.1.1.1");
+        eprintln!("   eg. {program} 1.1.1.1 ./ip_to_country.mmdb");
+        eprintln!("FLAGS:");
+        eprintln!("       --verbose (-v)      Enables verbose logging");
         eprintln!(
-            "NOTE: the `mmdb_path` argument is optional, if not present, ipinfo can automatically download and use a default ip-to-asn mmdb database (provided by IPLocate.io)."
+            "NOTE: the `mmdb_path` argument is optional, if not present, {program} can automatically download and use a default ip-to-asn mmdb database (provided by IPLocate.io)."
         );
         return;
     }
@@ -72,6 +89,9 @@ fn main() {
     };
 
     let file = std::fs::File::open(db_path).unwrap();
+
+    mmdb::set_verbose(verbose);
+
     let mut mmdb = mmdb::Mmdb::new(BufReader::new(file)).unwrap();
     let typ = mmdb.query_ip(ip).unwrap();
 

@@ -5,7 +5,18 @@ use std::{
     io::{Cursor, Read, Seek, SeekFrom},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num::TryFromIntError,
+    sync::atomic::{AtomicBool, Ordering},
 };
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_verbose(enabled: bool) {
+    VERBOSE.store(enabled, Ordering::Relaxed);
+}
+
+fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
 
 pub struct Mmdb<T: Read + Seek> {
     reader: T,
@@ -35,6 +46,10 @@ impl<T: Read + Seek> Mmdb<T> {
         reader.seek(std::io::SeekFrom::End(0))?;
         let file_size = reader.stream_position()?;
 
+        if is_verbose() {
+            println!("Database of size: {file_size}");
+        }
+
         let start_byte = match file_size {
             0..128_000 => 0,
             128_000.. => file_size - 128_000,
@@ -54,10 +69,22 @@ impl<T: Read + Seek> Mmdb<T> {
             return Err(MmdbError::MetadataNotFound);
         };
         let marker_pos = marker_pos + METADATA_MARKER.len();
+
+        if is_verbose() {
+            println!("Found metadata marker at: {marker_pos}");
+        }
+
         let mut contents = Cursor::new(contents);
         contents.seek(SeekFrom::Start(marker_pos as u64))?;
 
         let typ = read_type(&mut contents, None)?;
+
+        if is_verbose() {
+            println!(
+                "---------- MMDB Metadata ----------\n{typ}\n-----------------------------------"
+            );
+        }
+
         let metadata = MmdbMetadata::new(&typ)?;
         reader.seek(SeekFrom::Start(0))?;
         Ok(Self { reader, metadata })
@@ -65,6 +92,9 @@ impl<T: Read + Seek> Mmdb<T> {
 
     pub fn query_ip(&mut self, ip: impl Into<IpAddr>) -> Result<Option<Type>, MmdbError> {
         let ip = ip.into();
+        if is_verbose() {
+            println!("IP query: {ip:?}");
+        }
         match ip {
             IpAddr::V4(ip) => self.query_ipv4(ip),
             IpAddr::V6(ip) => self.query_ipv6(ip),
@@ -105,6 +135,9 @@ impl<T: Read + Seek> Mmdb<T> {
 
     pub fn query_ip_uint(&mut self, ip: u128, num_bits: usize) -> Result<Option<Type>, MmdbError> {
         self.reader.seek(SeekFrom::Start(0))?;
+        if is_verbose() {
+            print!("Path: Node(0) -> ");
+        }
         for i in (0..num_bits).rev() {
             let bit = match (ip >> i) & 1 {
                 1 => true,
@@ -114,9 +147,15 @@ impl<T: Read + Seek> Mmdb<T> {
 
             match read_record(&mut self.reader, &self.metadata, bit)? {
                 RecordReadResult::TraverseTreeTo(pos) => {
+                    if is_verbose() {
+                        print!("Node({pos}) -> ");
+                    }
                     self.reader.seek(SeekFrom::Start(pos as u64))?;
                 }
                 RecordReadResult::Data(pos) => {
+                    if is_verbose() {
+                        println!("Data({pos})");
+                    }
                     self.reader.seek(SeekFrom::Start(pos as u64))?;
                     let typ = read_type(&mut self.reader, Some(&self.metadata))?;
                     return Ok(Some(typ));
