@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt::Display,
+    fmt::{self, Display},
     io::{Cursor, Read, Seek, SeekFrom},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num::TryFromIntError,
@@ -295,7 +295,7 @@ impl Display for Type {
                         }
                         writeln!(f, "}}")
                     } else {
-                        writeln!(f)
+                        fmt::Result::Ok(())
                     }
                 }
                 Type::Array(items) => {
