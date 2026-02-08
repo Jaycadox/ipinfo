@@ -1,0 +1,17 @@
+[package]
+name = "ipinfo"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+byteorder = "1.5.0"
+directories = "6.0.0"
+indicatif = "0.18.3"
+thiserror = "2.0.18"
+ureq = "3.2.0"
