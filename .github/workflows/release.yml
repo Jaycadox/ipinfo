@@ -1,0 +1,113 @@
+name: Rust Build and Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Rust
+      uses: hecrj/setup-rust-action@v2
+      with:
+        rust-version: stable
+
+    - name: Build for Linux
+      run: cargo build --release
+    - name: Rename file
+      run: mv target/release/ipinfo target/release/ipinfo-linux
+    - name: Strip file
+      run: strip target/release/ipinfo-linux
+    - name: Archive Linux artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: linux-artifacts
+        path: target/release/ipinfo-linux
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Rust
+      uses: hecrj/setup-rust-action@v2
+      with:
+        rust-version: stable
+
+    - name: Build for macOS
+      run: cargo build --release
+    - name: Rename file
+      run: mv target/release/ipinfo target/release/ipinfo-macos
+    - name: Archive macOS artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: macos-artifacts
+        path: target/release/ipinfo-macos
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Rust
+      uses: hecrj/setup-rust-action@v2
+      with:
+        rust-version: stable
+
+    - name: Build for Windows
+      run: cargo build --release
+    - name: Rename file
+      run: ren ${{ github.workspace }}/target/release/ipinfo.exe ${{ github.workspace }}/target/release/ipinfo-win.exe
+    - name: Archive Windows artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: windows-artifacts
+        path: target/release/ipinfo-win.exe
+
+  release:
+    needs: [build, build-macos, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Download Linux artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: linux-artifacts
+
+    - name: Download macOS artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: macos-artifacts
+
+    - name: Download Windows artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: windows-artifacts
+
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: autobuild-${{ github.run_number }}
+        body: Automatically generated build
+        files: |
+          ./ipinfo-win.exe
+          ./ipinfo-macos
+          ./ipinfo-linux
