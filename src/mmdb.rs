@@ -140,9 +140,42 @@ fn read_record<T: Read + Seek>(
     metadata: &MmdbMetadata,
     bit_set: bool,
 ) -> Result<RecordReadResult, MmdbError> {
+    let bytes_per_node = bytes_per_node(metadata.record_size)?;
     let bytes = metadata.record_size / 8;
-    let left_record = reader.read_uint128::<BigEndian>(bytes as usize)?;
-    let right_record = reader.read_uint128::<BigEndian>(bytes as usize)?;
+    // let left_record = reader.read_uint128::<BigEndian>(bytes as usize)?;
+    // let right_record = reader.read_uint128::<BigEndian>(bytes as usize)?;
+
+    let (left_record, right_record) = match bytes_per_node {
+        6 => {
+            let left = reader.read_u24::<BigEndian>()?;
+            let right = reader.read_u24::<BigEndian>()?;
+            (left, right)
+        }
+        7 => {
+            let mut buf = [0u8; 7];
+            reader.read_exact(&mut buf)?;
+
+            let left = (((buf[3] as u32) & 0xf0) << 20)
+                | ((buf[0] as u32) << 16)
+                | ((buf[1] as u32) << 8)
+                | (buf[2] as u32);
+
+            let right = (((buf[3] as u32) & 0x0f) << 24)
+                | ((buf[4] as u32) << 16)
+                | ((buf[5] as u32) << 8)
+                | (buf[6] as u32);
+
+            (left, right)
+        }
+        8 => {
+            let left = reader.read_u32::<BigEndian>()?;
+            let right = reader.read_u32::<BigEndian>()?;
+            (left, right)
+        }
+        _ => {
+            return Err(MmdbError::InvalidData("bad node size"));
+        }
+    };
 
     // println!(
     //     "{left_record} {right_record} {bit_set} {}",
@@ -150,20 +183,20 @@ fn read_record<T: Read + Seek>(
     // );
 
     let selected_record = match bit_set {
-        false => left_record,
-        true => right_record,
+        false => left_record as u128,
+        true => right_record as u128,
     };
     let node_count = metadata.node_count as u128;
 
     if selected_record < node_count {
         Ok(RecordReadResult::TraverseTreeTo(
-            selected_record as usize * bytes as usize * 2,
+            selected_record as usize * bytes_per_node as usize,
         ))
     } else if selected_record == node_count {
         Ok(RecordReadResult::NoData)
     } else {
         let data_section_offset = selected_record - node_count - 16;
-        let search_tree_size = (bytes * 2) as u128 * node_count;
+        let search_tree_size = bytes_per_node as u128 * node_count;
         let file_offset = data_section_offset + search_tree_size + 16;
         Ok(RecordReadResult::Data(file_offset as usize))
     }
@@ -265,9 +298,9 @@ impl Display for Type {
                     };
 
                     if indentation != 0 {
-                        writeln!(f, "{{")?;
+                        // writeln!(f, "{{")?;
                         for _ in 0..indentation {
-                            write!(f, "\t")?;
+                            //write!(f, "\t")?;
                         }
                     }
 
@@ -280,26 +313,21 @@ impl Display for Type {
                         };
                         let last = hash_map.peek().is_none();
                         for _ in 0..indentation {
-                            write!(f, "\t")?;
+                            write!(f, " ")?;
                         }
                         write!(f, "{key}: ")?;
-                        pretty_print_type(value, indentation, f)?;
+                        if matches!(value, Type::Map(_)) {
+                            writeln!(f)?;
+                        }
+                        pretty_print_type(value, indentation + 1, f)?;
                         if !last {
                             writeln!(f, ",")?;
                         }
                     }
-
-                    if indentation != 0 {
-                        for _ in 0..indentation {
-                            write!(f, "\t")?;
-                        }
-                        writeln!(f, "}}")
-                    } else {
-                        fmt::Result::Ok(())
-                    }
+                    fmt::Result::Ok(())
                 }
                 Type::Array(items) => {
-                    write!(f, "[")?;
+                    writeln!(f)?;
                     let mut items = items.iter().peekable();
                     while let Some(value) = items.next() {
                         let last = items.peek().is_none();
@@ -308,7 +336,7 @@ impl Display for Type {
                             write!(f, ", ")?;
                         }
                     }
-                    write!(f, "]")
+                    fmt::Result::Ok(())
                 }
                 Type::DataCacheContainer => write!(f, "[data cache container]"),
                 Type::EndMarker => write!(f, "[end marker]"),
@@ -321,27 +349,40 @@ impl Display for Type {
     }
 }
 
+fn bytes_per_node(record_size: u16) -> Result<u64, MmdbError> {
+    match record_size {
+        24 => Ok(6),
+        28 => Ok(7),
+        32 => Ok(8),
+        _ => Err(MmdbError::InvalidMetadata("unsupported record_size")),
+    }
+}
+
 fn read_type<T>(reader: &mut T, metadata: Option<&MmdbMetadata>) -> Result<Type, MmdbError>
 where
     T: Read + Seek,
 {
-    let metadata_control_byte = reader.read_u8()?;
+    let metadata_control_byte = reader.read_u8()?; // CODE FAILS HERE, overflow?
 
     let typ = metadata_control_byte >> 5;
     let size_hint = metadata_control_byte & 0x1f;
     // println!("{metadata_control_byte:0b} {typ:0b} {size_hint:0b}");
 
     let typ = match typ {
-        0 => 7 + reader.read_u8()?,
+        0 => 7u8 + reader.read_u8()?,
         _ => typ,
     };
 
-    let size: u32 = match size_hint {
-        0..=28 => size_hint.into(),
-        29 => (29 + reader.read_u8()?).into(),
-        30 => (285 + reader.read_u16::<BigEndian>()?).into(),
-        31 => 65821 + reader.read_u24::<BigEndian>()?,
-        _ => return Err(MmdbError::InvalidData("invalid size field")),
+    let size: u32 = if typ != 1 {
+        match size_hint {
+            0..=28 => size_hint.into(),
+            29 => (29 + reader.read_u8()?).into(),
+            30 => (285 + reader.read_u16::<BigEndian>()?).into(),
+            31 => 65821 + reader.read_u24::<BigEndian>()?,
+            _ => return Err(MmdbError::InvalidData("invalid size field")),
+        }
+    } else {
+        size_hint as u32
     };
 
     match typ {
@@ -354,10 +395,10 @@ where
                     let next_byte = reader.read_u8()?;
                     let next_value: u16 = next_byte as u16 + ((pointer_value as u16) << 8);
                     if let Some(metadata) = metadata {
-                        let data_section_offset =
-                            metadata.record_size as u64 / 8 * 2 * metadata.node_count as u64
-                                + next_value as u64
-                                + 16;
+                        let data_section_offset = bytes_per_node(metadata.record_size)?
+                            * metadata.node_count as u64
+                            + next_value as u64
+                            + 16;
                         let pos = reader.stream_position()?;
                         reader.seek(SeekFrom::Start(data_section_offset))?;
                         let typ = read_type(reader, Some(metadata));
@@ -375,10 +416,10 @@ where
                     let value = u16::from_be_bytes(buf);
                     let next_value: u32 = value as u32 + (pointer_value << 16) + 2048;
                     if let Some(metadata) = metadata {
-                        let data_section_offset =
-                            metadata.record_size as u64 / 8 * 2 * metadata.node_count as u64
-                                + next_value as u64
-                                + 16;
+                        let data_section_offset = bytes_per_node(metadata.record_size)?
+                            * metadata.node_count as u64
+                            + next_value as u64
+                            + 16;
                         let pos = reader.stream_position()?;
                         reader.seek(SeekFrom::Start(data_section_offset))?;
                         let typ = read_type(reader, Some(metadata));
@@ -396,10 +437,10 @@ where
                     let value = ((buf[0] as u32) << 16) | ((buf[1] as u32) << 8) | (buf[2] as u32);
                     let next_value: u32 = value + (pointer_value << 24) + 526336;
                     if let Some(metadata) = metadata {
-                        let data_section_offset =
-                            metadata.record_size as u64 / 8 * 2 * metadata.node_count as u64
-                                + next_value as u64
-                                + 16;
+                        let data_section_offset = bytes_per_node(metadata.record_size)?
+                            * metadata.node_count as u64
+                            + next_value as u64
+                            + 16;
                         let pos = reader.stream_position()?;
                         reader.seek(SeekFrom::Start(data_section_offset))?;
                         let typ = read_type(reader, Some(metadata));
@@ -414,10 +455,10 @@ where
                 3 => {
                     let next_value = reader.read_u32::<BigEndian>()?;
                     if let Some(metadata) = metadata {
-                        let data_section_offset =
-                            metadata.record_size as u64 / 8 * 2 * metadata.node_count as u64
-                                + next_value as u64
-                                + 16;
+                        let data_section_offset = bytes_per_node(metadata.record_size)?
+                            * metadata.node_count as u64
+                            + next_value as u64
+                            + 16;
                         let pos = reader.stream_position()?;
                         reader.seek(SeekFrom::Start(data_section_offset))?;
                         let typ = read_type(reader, Some(metadata));
@@ -485,6 +526,15 @@ where
                 };
                 let value = read_type(reader, metadata)?;
                 items.insert(key, value);
+
+                // if items.contains_key("node_count")
+                //     && items.contains_key("record_size")
+                //     && items.contains_key("ip_version")
+                // {
+                //     // Cut metadata search off short here, as this is the only information we actually need
+                //     //break;
+                // } else {
+                // }
             }
             Ok(Type::Map(items))
         }
