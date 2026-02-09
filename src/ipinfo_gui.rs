@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{cell::RefCell, fs::File, io::BufReader, net::IpAddr, rc::Rc, sync::mpsc::TryRecvError};
 
 use fltk::{
@@ -41,7 +42,7 @@ fn main() {
         input_bar.set_trigger(CallbackTrigger::EnterKeyAlways);
         input_bar.set_tooltip("IP address");
 
-        let button = button::Button::default().with_label("Query");
+        let mut button = button::Button::default().with_label("Query");
         row.fixed(&button, 100);
         row.end();
         col.fixed(&row, 30);
@@ -52,6 +53,11 @@ fn main() {
             i.take_focus().unwrap();
             i.set_position(val.len() as i32).unwrap();
             i.set_mark(0).unwrap();
+        });
+
+        button.set_callback(move |i| {
+            let val = input_bar.value();
+            s.send(Message::SendQuery(val.to_string()));
         });
     }
 
