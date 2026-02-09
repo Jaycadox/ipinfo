@@ -177,7 +177,7 @@ fn main() {
                     if let Some(mmdb) = mmdb.borrow_mut().as_mut() {
                         let Ok(ip) = msg.parse::<IpAddr>() else {
                             buffer.set_text(&format!("Invalid IP address format '{msg}'"));
-                            return;
+                            continue;
                         };
                         match mmdb.query_ip(ip) {
                             Ok(res) => match res {
@@ -188,12 +188,12 @@ fn main() {
                                 }
                                 None => {
                                     buffer.set_text(&format!("No data found for IP '{msg}'"));
-                                    return;
+                                    continue;
                                 }
                             },
                             Err(err) => {
                                 buffer.set_text(&format!("Error during query '{err:?}'"));
-                                return;
+                                continue;
                             }
                         }
                     } else {
