@@ -16,7 +16,7 @@ use fltk::{
 use fltk_theme::{ColorTheme, color_themes};
 
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 
 mod downloader;
 
@@ -58,7 +58,7 @@ fn main() {
             i.set_mark(0).unwrap();
         });
 
-        button.set_callback(move |i| {
+        button.set_callback(move |_| {
             let val = input_bar.value();
             s.send(Message::SendQuery(val.to_string()));
         });
@@ -185,12 +185,14 @@ fn main() {
         let hwnd = wind.raw_handle();
         let dark_mode: i32 = 1;
 
-        DwmSetWindowAttribute(
-            hwnd as _,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &dark_mode as *const i32 as _,
-            std::mem::size_of::<i32>() as u32,
-        );
+        for attr in [20u32, 19u32] {
+            windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                hwnd as _,
+                attr, // Pass the u32 attribute ID
+                &dark_mode as *const i32 as _,
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
     }
 
     while app.wait() {
