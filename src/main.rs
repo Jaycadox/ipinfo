@@ -1,7 +1,9 @@
 use std::{
+    env,
     fs::File,
     io::{BufReader, BufWriter, Write},
     net::IpAddr,
+    path::PathBuf,
     str::FromStr,
 };
 
@@ -49,10 +51,7 @@ fn main() {
     let db_path = match args.get(1) {
         Some(arg) => std::path::PathBuf::from_str(arg).expect("invalid path"),
         None => {
-            let db_path = directories::ProjectDirs::from("xyz", "jayphen", "ipinfo")
-                .expect("failed to get user directory");
-            let db_path_parent = db_path.data_dir();
-            let db_path = db_path_parent.join("db.mmdb");
+            let db_path = get_db_path();
 
             const URL: &str = "https://github.com/iplocate/ip-address-databases/raw/d2264aeeffceb0ec401a05581a9401150a79eb5a/ip-to-asn/ip-to-asn.mmdb?download=true";
 
@@ -65,7 +64,7 @@ fn main() {
                 let mut line = String::new();
                 std::io::stdin().read_line(&mut line).unwrap();
                 let line = line.trim();
-                if line != "y" {
+                if line.to_lowercase() != "y" {
                     eprintln!("Aborted");
                     return;
                 }
@@ -158,4 +157,36 @@ fn human_bytes(b: u64) -> String {
         1024..1_048_576 => format!("{:.1} KB", b as f64 / 1024.0),
         _ => format!("{:.1} MB", b as f64 / 1_048_576.0),
     }
+}
+
+fn get_db_path() -> PathBuf {
+    let mut base_dir = if cfg!(target_os = "windows") {
+        // Windows: %APPDATA% (C:\Users\Name\AppData\Roaming)
+        env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        // macOS: ~/Library/Application Support
+        env::var_os("HOME").map(|h| {
+            let mut p = PathBuf::from(h);
+            p.push("Library");
+            p.push("Application Support");
+            p
+        })
+    } else {
+        // Linux/Unix: $XDG_DATA_HOME or ~/.local/share
+        env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| {
+            env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".local/share");
+                p
+            })
+        })
+    }
+    .expect("Could not determine config directory");
+
+    base_dir.push("ipinfo");
+
+    let _ = std::fs::create_dir_all(&base_dir);
+
+    base_dir.push("db.mmdb");
+    base_dir
 }
