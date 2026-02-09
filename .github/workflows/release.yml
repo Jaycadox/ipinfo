@@ -11,103 +11,87 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suffix: linux
+            ext: ""
+          - os: macos-latest
+            suffix: macos
+            ext: ""
+          - os: windows-latest
+            suffix: win
+            ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Rust
-      uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: stable
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxext-dev libxft-dev libxinerama-dev \
+            libxcursor-dev libxrender-dev libxfixes-dev \
+            libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libwayland-dev wayland-protocols libdbus-1-dev \
+            libxkbcommon-dev cmake
 
-    - name: Build for Linux
-      run: cargo build --release
-    - name: Rename file
-      run: mv target/release/ipinfo target/release/ipinfo-linux
-    - name: Strip file
-      run: strip target/release/ipinfo-linux
-    - name: Archive Linux artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: linux-artifacts
-        path: target/release/ipinfo-linux
+      - name: Set up Rust
+        uses: hecrj/setup-rust-action@v2
+        with:
+          rust-version: stable
 
-  build-macos:
-    runs-on: macos-latest
+      - name: Build release
+        run: cargo build --release
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
+      - name: Rename binaries (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mv target/release/ipinfo target/release/ipinfo-${{ matrix.suffix }}
+          mv target/release/ipinfo-gui target/release/ipinfo-gui-${{ matrix.suffix }}
 
-    - name: Set up Rust
-      uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: stable
+      - name: Rename binaries (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Rename-Item target/release/ipinfo.exe ipinfo-${{ matrix.suffix }}.exe
+          Rename-Item target/release/ipinfo-gui.exe ipinfo-gui-${{ matrix.suffix }}.exe
 
-    - name: Build for macOS
-      run: cargo build --release
-    - name: Rename file
-      run: mv target/release/ipinfo target/release/ipinfo-macos
-    - name: Archive macOS artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: macos-artifacts
-        path: target/release/ipinfo-macos
-
-  build-windows:
-    runs-on: windows-latest
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-
-    - name: Set up Rust
-      uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: stable
-
-    - name: Build for Windows
-      run: cargo build --release
-    - name: Rename file
-      run: ren ${{ github.workspace }}/target/release/ipinfo.exe ${{ github.workspace }}/target/release/ipinfo-win.exe
-    - name: Archive Windows artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: windows-artifacts
-        path: target/release/ipinfo-win.exe
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.suffix }}-artifacts
+          path: |
+            target/release/ipinfo-${{ matrix.suffix }}${{ matrix.ext }}
+            target/release/ipinfo-gui-${{ matrix.suffix }}${{ matrix.ext }}
 
   release:
-    needs: [build, build-macos, build-windows]
+    needs: build
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Download Linux artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: linux-artifacts
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
-    - name: Download macOS artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: macos-artifacts
-
-    - name: Download Windows artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: windows-artifacts
-
-    - name: Create Release
-      id: create_release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: autobuild-${{ github.run_number }}
-        body: Automatically generated build
-        files: |
-          ./ipinfo-win.exe
-          ./ipinfo-macos
-          ./ipinfo-linux
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: autobuild-${{ github.run_number }}
+          body: Automatically generated build
+          files: |
+            ipinfo-linux
+            ipinfo-gui-linux
+            ipinfo-macos
+            ipinfo-gui-macos
+            ipinfo-win.exe
+            ipinfo-gui-win.exe

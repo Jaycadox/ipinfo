@@ -3,6 +3,18 @@ name = "ipinfo"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "mmdb"
+path = "src/mmdb.rs"
+
+[[bin]]
+name = "ipinfo"
+path = "src/ipinfo.rs"
+
+[[bin]]
+name = "ipinfo-gui"
+path = "src/ipinfo_gui.rs"
+
 [profile.release]
 opt-level = "z"
 lto = true
@@ -13,5 +25,7 @@ incremental = false
 
 [dependencies]
 byteorder = "1.5.0"
+fltk = { version = "1.5.22", features = ["use-wayland"] }
+fltk-theme = "0.7.9"
 thiserror = "2.0.18"
 tinyget = { version = "1.1.4", features = ["https"] }
