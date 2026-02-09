@@ -15,6 +15,9 @@ use fltk::{
 };
 use fltk_theme::{ColorTheme, color_themes};
 
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+
 mod downloader;
 
 enum Message {
@@ -175,6 +178,20 @@ fn main() {
     col.end();
     wind.end();
     wind.show();
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use fltk::prelude::WindowExt;
+        let hwnd = wind.raw_handle();
+        let dark_mode: i32 = 1;
+
+        DwmSetWindowAttribute(
+            hwnd as _,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark_mode as *const i32 as _,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
 
     while app.wait() {
         if let Some(msg) = r.recv() {

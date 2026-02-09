@@ -167,6 +167,7 @@ dependencies = [
  "fltk-theme",
  "thiserror",
  "tinyget",
+ "windows-sys",
 ]
 
 [[package]]
