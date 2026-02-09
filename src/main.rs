@@ -1,5 +1,11 @@
-use indicatif::{ProgressBar, ProgressStyle};
-use std::{fs::File, io::BufReader, net::IpAddr, str::FromStr};
+use std::{
+    fs::File,
+    io::{BufReader, BufWriter, Write},
+    net::IpAddr,
+    str::FromStr,
+};
+
+use byteorder::WriteBytesExt;
 
 mod mmdb;
 
@@ -48,14 +54,14 @@ fn main() {
             let db_path_parent = db_path.data_dir();
             let db_path = db_path_parent.join("db.mmdb");
 
+            const URL: &str = "https://github.com/iplocate/ip-address-databases/raw/d2264aeeffceb0ec401a05581a9401150a79eb5a/ip-to-asn/ip-to-asn.mmdb?download=true";
+
             if !std::fs::exists(&db_path).unwrap_or(false) {
                 eprintln!(
                     "ERR: ip address database does not exist (searching at {:?})",
                     db_path
                 );
-                eprint!(
-                    "Automatically download database from 'https://github.com/iplocate/ip-address-databases/raw/d2264aeeffceb0ec401a05581a9401150a79eb5a/ip-to-asn/ip-to-asn.mmdb?download=true' (72.2MB)? y/n: "
-                );
+                eprint!("Automatically download database from '{URL}' (72.2MB)? y/n: ");
                 let mut line = String::new();
                 std::io::stdin().read_line(&mut line).unwrap();
                 let line = line.trim();
@@ -63,26 +69,17 @@ fn main() {
                     eprintln!("Aborted");
                     return;
                 }
-                let mut resp = ureq::get("https://github.com/iplocate/ip-address-databases/raw/d2264aeeffceb0ec401a05581a9401150a79eb5a/ip-to-asn/ip-to-asn.mmdb?download=true").call().unwrap();
+                let resp = tinyget::get(URL).send_lazy().unwrap();
 
-                let download_size = resp
-                    .headers()
-                    .get("Content-Length")
-                    .and_then(|x| x.to_str().unwrap().parse::<u64>().ok())
-                    .unwrap_or(0);
+                let mut pb = ProgressBar::default();
+                let mut writer = BufWriter::new(File::create(&db_path).unwrap());
 
-                let bar = ProgressBar::new(download_size);
-                bar.set_style(ProgressStyle::default_bar()
-                        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap()
-                        .progress_chars("#>-"));
-
-                let body = resp.body_mut();
-                let mut source = bar.wrap_read(body.as_reader());
-                std::fs::create_dir_all(db_path_parent).unwrap();
-                let mut dest = File::create(&db_path).unwrap();
-
-                std::io::copy(&mut source, &mut dest).unwrap();
-                bar.finish_with_message("OK");
+                for byte in resp {
+                    let (byte, len) = byte.unwrap();
+                    writer.write_u8(byte).unwrap();
+                    pb.inc_and_set_remaining(len as u64);
+                }
+                pb.finish();
             }
             db_path
         }
@@ -102,5 +99,63 @@ fn main() {
         None => {
             println!("No data found");
         }
+    }
+}
+
+pub struct ProgressBar {
+    total: u64,
+    current: u64,
+    width: u16,
+}
+
+impl Default for ProgressBar {
+    fn default() -> Self {
+        Self {
+            total: 0,
+            current: 0,
+            width: 50,
+        }
+    }
+}
+
+impl ProgressBar {
+    pub fn inc_and_set_remaining(&mut self, new_total: u64) {
+        self.current = self.current.saturating_add(1);
+        self.total = new_total.saturating_add(self.current);
+        if self.current.is_multiple_of(100000) {
+            self.draw();
+        }
+    }
+
+    pub fn finish(&self) {
+        eprintln!();
+    }
+
+    fn draw(&self) {
+        let pct = if self.total == 0 {
+            1.0
+        } else {
+            self.current as f64 / self.total as f64
+        };
+        let filled = (pct * self.width as f64) as u16;
+        let empty = self.width - filled;
+
+        eprint!(
+            "\r[{}>{}] {:.0}% ({}/{})             ",
+            "=".repeat(filled as usize),
+            " ".repeat(empty as usize),
+            pct * 100.0,
+            human_bytes(self.current),
+            human_bytes(self.total),
+        );
+        let _ = std::io::stderr().lock().flush();
+    }
+}
+
+fn human_bytes(b: u64) -> String {
+    match b {
+        0..1024 => format!("{b} B"),
+        1024..1_048_576 => format!("{:.1} KB", b as f64 / 1024.0),
+        _ => format!("{:.1} MB", b as f64 / 1_048_576.0),
     }
 }
