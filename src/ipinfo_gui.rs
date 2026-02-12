@@ -1,6 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{
-    cell::RefCell, fs::File, io::BufReader, net::IpAddr, rc::Rc, sync::mpsc::TryRecvError,
+    cell::RefCell,
+    fs::File,
+    io::BufReader,
+    net::IpAddr,
+    rc::Rc,
+    sync::mpsc::{Receiver, TryRecvError},
     time::Instant,
 };
 
@@ -31,6 +36,51 @@ enum Message {
     ShowMetadata,
     SaveConfig,
     ReloadConfig,
+}
+
+fn show_progress_modal<T: 'static, F, C>(
+    title: &str,
+    rx: Receiver<T>,
+    to_progress: F,
+    on_complete: C,
+) where
+    F: Fn(&T) -> Option<(f64, String)> + 'static,
+    C: FnOnce(T) + 'static,
+{
+    let mut diag_win = Window::default().with_size(300, 60).with_label(title);
+    diag_win.make_modal(true);
+
+    let mut progress = Progress::new(0, 0, 300, 60, "");
+    progress.set_minimum(0.0);
+    progress.set_maximum(100.0);
+    progress.set_selection_color(fltk::enums::Color::Blue);
+    diag_win.end();
+    diag_win.show();
+
+    let mut on_complete = Some(on_complete);
+
+    app::add_idle3(move |handle| match rx.try_recv() {
+        Ok(event) => match to_progress(&event) {
+            Some((p, label)) => {
+                if progress.value() as u64 != (p * 100.0) as u64 {
+                    progress.set_value(p * 100.0);
+                    progress.set_label(&format!("{label} ({:.0}%)", p * 100.0));
+                }
+            }
+            None => {
+                diag_win.hide();
+                if let Some(callback) = on_complete.take() {
+                    callback(event);
+                }
+                app::remove_idle3(handle);
+            }
+        },
+        Err(TryRecvError::Disconnected) => {
+            diag_win.hide();
+            app::remove_idle3(handle);
+        }
+        Err(TryRecvError::Empty) => {}
+    });
 }
 
 fn get_config_path() -> std::path::PathBuf {
@@ -80,11 +130,10 @@ fn main() {
     let (s, r) = app::channel::<Message>();
 
     let mut col = Flex::default_fill().column();
+    let mut row = Flex::default().row();
+    let mut input_bar = input::Input::default();
     col.set_margins(10, 10, 10, 10);
     {
-        let mut row = Flex::default().row();
-
-        let mut input_bar = input::Input::default();
         input_bar.set_trigger(CallbackTrigger::EnterKeyAlways);
         input_bar.set_tooltip("IP address");
 
@@ -96,11 +145,9 @@ fn main() {
         input_bar.set_callback(move |i| {
             let val = i.value();
             s.send(Message::SendQuery(val.to_string()));
-            i.take_focus().unwrap();
-            i.set_position(val.len() as i32).unwrap();
-            i.set_mark(0).unwrap();
         });
 
+        let input_bar = input_bar.clone();
         button.set_callback(move |_| {
             let val = input_bar.value();
             s.send(Message::SendQuery(val.to_string()));
@@ -144,45 +191,28 @@ fn main() {
         let mut input_bar2 = input_bar.clone();
         let mmdb = mmdb.clone();
         download_btn.set_callback(move |_| {
-            let mut diag_win = Window::default()
-                .with_size(300, 60)
-                .with_label("Processing...");
-            diag_win.make_modal(true);
-
-            let mut progress = Progress::new(0, 0, 300, 60, "");
-            progress.set_minimum(0.0);
-            progress.set_maximum(100.0);
-            progress.set_selection_color(fltk::enums::Color::Blue);
-            diag_win.end();
-            diag_win.show();
-
             let (rx, _handle) = downloader::download_default_mmdb();
 
             let mut btn = btn.clone();
             let row = row.clone();
             let mut input_bar = input_bar.clone();
-            app::add_idle3(move |handle| match rx.try_recv() {
-                Ok(event) => match event {
+            show_progress_modal(
+                "Downloading...",
+                rx,
+                |event| match event {
                     downloader::DownloadEvent::Progress(p) => {
-                        if progress.value() as u64 != (p * 100.0) as u64 {
-                            progress.set_value(p * 100.0);
-                            progress.set_label(&format!("{:.0}%", p * 100.0));
-                        }
+                        Some((*p, "Downloading...".to_string()))
                     }
-                    downloader::DownloadEvent::Done(path_buf) => {
-                        diag_win.hide();
+                    downloader::DownloadEvent::Done(_) => None,
+                },
+                move |event| {
+                    if let downloader::DownloadEvent::Done(path_buf) = event {
                         btn.hide();
                         row.recalc();
                         input_bar.set_value(path_buf.to_str().unwrap());
-                        app::remove_idle3(handle);
                     }
                 },
-                Err(TryRecvError::Disconnected) => {
-                    diag_win.hide();
-                    app::remove_idle3(handle);
-                }
-                Err(TryRecvError::Empty) => {}
-            });
+            );
         });
         let mut buffer = buffer.clone();
         let mmdb = mmdb.clone();
@@ -203,7 +233,6 @@ fn main() {
                     }
                 };
                 *mmdb.borrow_mut() = Some(new_mmdb);
-                // Show metadata when database is loaded
                 match (*mmdb.borrow_mut()).as_mut().unwrap().get_metadata_string() {
                     Ok(metadata) => {
                         buffer.set_text(&metadata);
@@ -305,7 +334,6 @@ fn main() {
                 db_loaded_checkbox.set_value(is_loaded);
             }
 
-            // Enable/disable buttons based on database state
             if is_loaded {
                 metadata_button.activate();
                 save_config_button.activate();
@@ -350,7 +378,6 @@ fn main() {
             match msg {
                 Message::SaveConfig => {
                     if let Some(_mmdb) = mmdb.borrow().as_ref() {
-                        // Get the current database path from the input field
                         let db_path = db_input_bar.value();
                         if !db_path.is_empty() && std::path::Path::new(&db_path).exists() {
                             match save_config(&db_path) {
@@ -400,37 +427,130 @@ fn main() {
                     }
                 }
                 Message::SendQuery(msg) => {
-                    if let Some(mmdb) = mmdb.borrow_mut().as_mut() {
-                        let Ok(ip) = msg.parse::<IpAddr>() else {
-                            buffer.set_text(&format!("Invalid IP address format '{msg}'"));
-                            continue;
-                        };
+                    if let Some(_mmdb_ref) = mmdb.borrow_mut().as_mut() {
+                        let is_domain = msg.parse::<IpAddr>().is_err();
 
-                        let start_time = Instant::now();
-                        let result = mmdb.query_ip(ip);
-                        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
-                        *last_query_time.borrow_mut() = elapsed_ns;
+                        if is_domain {
+                            let (tx, rx) = std::sync::mpsc::channel::<mmdb::QueryProgress>();
+                            let (result_tx, result_rx) =
+                                std::sync::mpsc::channel::<Result<IpAddr, mmdb::MmdbError>>();
 
-                        match result {
-                            Ok(res) => match res {
-                                Some(res) => {
-                                    buffer.set_text(&format!("{res}"));
+                            let msg_clone = msg.clone();
+                            let tx_clone = tx.clone();
+
+                            std::thread::spawn(move || {
+                                let _ = tx_clone.send(mmdb::QueryProgress::Started);
+
+                                match mmdb::dns::query_dns_for_domain(&msg_clone) {
+                                    Ok(ip) => {
+                                        let _ = tx_clone.send(mmdb::QueryProgress::DnsResolved);
+                                        let _ = result_tx.send(Ok(ip));
+                                        let _ = tx_clone.send(mmdb::QueryProgress::Completed);
+                                    }
+                                    Err(e) => {
+                                        let _ = result_tx.send(Err(mmdb::MmdbError::DnsError(e)));
+                                        let _ = tx_clone.send(mmdb::QueryProgress::Completed);
+                                    }
+                                }
+                            });
+
+                            let mmdb = mmdb.clone();
+                            let mut buffer = buffer.clone();
+                            let last_query_time = last_query_time.clone();
+                            let msg = msg.clone();
+
+                            show_progress_modal(
+                                "Resolving DNS...",
+                                rx,
+                                |event| {
+                                    event
+                                        .to_progress()
+                                        .map(|x| (x, "Resolving domain...".to_string()))
+                                },
+                                move |_final_event| {
+                                    if let Ok(Ok(ip)) = result_rx.try_recv() {
+                                        let start_time = Instant::now();
+
+                                        if let Some(mmdb_ref) = mmdb.borrow_mut().as_mut() {
+                                            let result = mmdb_ref.query_ip(ip);
+                                            let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+                                            *last_query_time.borrow_mut() = elapsed_ns;
+
+                                            match result {
+                                                Ok(data) => {
+                                                    let mut output = String::new();
+                                                    output.push_str(&format!(
+                                                        "DNS: Resolved domain '{}' -> {}\n",
+                                                        msg, ip
+                                                    ));
+                                                    match data {
+                                                        Some(res) => {
+                                                            output.push_str(&format!("{res}"));
+                                                        }
+                                                        None => {
+                                                            output.push_str(&format!(
+                                                                "No data found for IP '{ip}'"
+                                                            ));
+                                                        }
+                                                    }
+                                                    buffer.set_text(&output);
+                                                }
+                                                Err(err) => {
+                                                    buffer.set_text(&format!(
+                                                        "Error during query '{err:?}'"
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    } else if let Ok(Err(e)) = result_rx.try_recv() {
+                                        buffer.set_text(&format!(
+                                            "Error during DNS resolution: {e:?}"
+                                        ));
+                                    }
+                                },
+                            );
+                        } else {
+                            buffer.set_text("");
+                            let start_time = Instant::now();
+                            let result = _mmdb_ref.query_string(&msg);
+                            let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+                            *last_query_time.borrow_mut() = elapsed_ns;
+
+                            match result {
+                                Ok(info) => {
+                                    let mut output = String::new();
+                                    if let Some(dns_info) = &info.dns_info {
+                                        output.push_str(&format!(
+                                            "DNS: Resolved domain '{}' -> {}\n",
+                                            dns_info.domain, dns_info.resolved_ip
+                                        ));
+                                    }
+                                    match info.data {
+                                        Some(res) => {
+                                            output.push_str(&format!("{res}"));
+                                        }
+                                        None => {
+                                            output
+                                                .push_str(&format!("No data found for IP '{msg}'"));
+                                        }
+                                    }
+                                    buffer.set_text(&output);
                                     display.set_insert_position(buffer.length());
                                     display.show_insert_position();
                                 }
-                                None => {
-                                    buffer.set_text(&format!("No data found for IP '{msg}'"));
-                                    continue;
+                                Err(err) => {
+                                    buffer.set_text(&format!("Error during query '{err:?}'"));
                                 }
-                            },
-                            Err(err) => {
-                                buffer.set_text(&format!("Error during query '{err:?}'"));
-                                continue;
                             }
                         }
                     } else {
                         buffer.set_text("Failed to query IP as database is not loaded");
                     }
+
+                    let val = input_bar.value();
+                    input_bar.take_focus().unwrap();
+                    input_bar.set_position(val.len() as i32).unwrap();
+                    input_bar.set_mark(0).unwrap();
                 }
             }
         }

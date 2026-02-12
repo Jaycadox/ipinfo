@@ -5,8 +5,30 @@ use std::{
     io::{Cursor, Read, Seek, SeekFrom},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num::TryFromIntError,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
 };
+
+pub mod dns;
+
+#[derive(Clone, Debug)]
+pub enum QueryProgress {
+    Started,
+    DnsResolved,
+    Completed,
+}
+
+impl QueryProgress {
+    pub fn to_progress(&self) -> Option<f64> {
+        match self {
+            QueryProgress::Started => Some(0.5),
+            QueryProgress::DnsResolved => Some(0.99),
+            QueryProgress::Completed => None,
+        }
+    }
+}
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
@@ -39,6 +61,20 @@ pub enum MmdbError {
     BadConversion(#[from] TryFromIntError),
     #[error("Feature of MMDB is not implemented for this reader")]
     NotImplemented(&'static str),
+    #[error("DNS error")]
+    DnsError(#[from] dns::DnsError),
+}
+
+#[derive(Clone, Debug)]
+pub struct MmdbInfo {
+    pub data: Option<Type>,
+    pub dns_info: Option<DnsInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DnsInfo {
+    pub domain: String,
+    pub resolved_ip: IpAddr,
 }
 
 impl<T: Read + Seek> Mmdb<T> {
@@ -127,6 +163,51 @@ impl<T: Read + Seek> Mmdb<T> {
         let metadata = MmdbMetadata::new(&typ)?;
         reader.seek(SeekFrom::Start(0))?;
         Ok(Self { reader, metadata })
+    }
+
+    pub fn query_string(&mut self, ip_or_domain: &str) -> Result<MmdbInfo, MmdbError> {
+        self.query_string_with_progress(ip_or_domain, None)
+    }
+
+    pub fn query_string_with_progress(
+        &mut self,
+        ip_or_domain: &str,
+        progress_tx: Option<&Sender<QueryProgress>>,
+    ) -> Result<MmdbInfo, MmdbError> {
+        match ip_or_domain.parse::<IpAddr>() {
+            Ok(ip) => {
+                let data = self.query_ip(ip)?;
+                Ok(MmdbInfo {
+                    data,
+                    dns_info: None,
+                })
+            }
+            Err(_) => {
+                if let Some(tx) = progress_tx {
+                    let _ = tx.send(QueryProgress::Started);
+                }
+
+                let ip = dns::query_dns_for_domain(ip_or_domain)?;
+
+                if let Some(tx) = progress_tx {
+                    let _ = tx.send(QueryProgress::DnsResolved);
+                }
+
+                let data = self.query_ip(ip)?;
+
+                if let Some(tx) = progress_tx {
+                    let _ = tx.send(QueryProgress::Completed);
+                }
+
+                Ok(MmdbInfo {
+                    data,
+                    dns_info: Some(DnsInfo {
+                        domain: ip_or_domain.to_string(),
+                        resolved_ip: ip,
+                    }),
+                })
+            }
+        }
     }
 
     pub fn query_ip(&mut self, ip: impl Into<IpAddr>) -> Result<Option<Type>, MmdbError> {

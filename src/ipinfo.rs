@@ -39,11 +39,6 @@ fn main() {
 
     let ip = args[0].clone();
 
-    let Ok(ip) = ip.parse::<IpAddr>() else {
-        eprintln!("ERR: the provided ip address '{ip}' is invalid");
-        return;
-    };
-
     let db_path = match args.get(1) {
         Some(arg) => std::path::PathBuf::from_str(arg).expect("invalid path"),
         None => {
@@ -91,9 +86,17 @@ fn main() {
     mmdb::set_verbose(verbose);
 
     let mut mmdb = mmdb::Mmdb::new(BufReader::new(file)).unwrap();
-    let typ = mmdb.query_ip(ip).unwrap();
 
-    match typ {
+    let info = mmdb.query_string(&ip).unwrap();
+
+    if let Some(dns_info) = &info.dns_info {
+        println!(
+            "DNS: Resolved domain '{}' -> {}",
+            dns_info.domain, dns_info.resolved_ip
+        );
+    }
+
+    match info.data {
         Some(typ) => {
             println!("{typ}");
         }

@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 name = "mmdb"
-path = "src/mmdb.rs"
+path = "src/mmdb/mod.rs"
 
 [[bin]]
 name = "ipinfo"
