@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use std::{cell::RefCell, fs::File, io::BufReader, net::IpAddr, rc::Rc, sync::mpsc::TryRecvError};
+use std::{
+    cell::RefCell, fs::File, io::BufReader, net::IpAddr, rc::Rc, sync::mpsc::TryRecvError,
+    time::Instant,
+};
 
 use fltk::{
     app,
@@ -9,7 +12,7 @@ use fltk::{
     group::Flex,
     input,
     misc::Progress,
-    prelude::{DisplayExt, GroupExt, InputExt, WidgetBase, WidgetExt, WindowExt},
+    prelude::{ButtonExt, DisplayExt, GroupExt, InputExt, WidgetBase, WidgetExt, WindowExt},
     text,
     window::Window,
 };
@@ -19,9 +22,48 @@ use fltk_theme::{ColorTheme, color_themes};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 
 mod downloader;
+mod mmdb;
+
+use ini::Ini;
 
 enum Message {
     SendQuery(String),
+    ShowMetadata,
+    SaveConfig,
+    ReloadConfig,
+}
+
+fn get_config_path() -> std::path::PathBuf {
+    let mut config_path = downloader::default_mmdb_path();
+    config_path.set_file_name("config.ini");
+    config_path
+}
+
+fn load_config() -> Option<String> {
+    let config_path = get_config_path();
+    if config_path.exists() {
+        match Ini::load_from_file(&config_path) {
+            Ok(ini) => {
+                if let Some(section) = ini.section(Some("database")) {
+                    section.get("path").map(|s| s.to_string())
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    }
+}
+
+fn save_config(db_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = get_config_path();
+    let mut ini = Ini::new();
+    ini.with_section(Some("database")).set("path", db_path);
+
+    ini.write_to_file(&config_path)?;
+    Ok(())
 }
 
 fn main() {
@@ -33,6 +75,7 @@ fn main() {
         .with_label("IP Info GUI");
 
     let mmdb = Rc::new(RefCell::new(None));
+    let last_query_time = Rc::new(RefCell::new(0u64));
 
     let (s, r) = app::channel::<Message>();
 
@@ -65,6 +108,8 @@ fn main() {
     }
 
     let mut buffer = text::TextBuffer::default();
+
+    let mut db_input_bar: input::Input;
     {
         let mut row = Flex::default().row();
         let input_label = fltk::frame::Frame::default().with_label("MMDB database:");
@@ -110,7 +155,6 @@ fn main() {
             progress.set_selection_color(fltk::enums::Color::Blue);
             diag_win.end();
             diag_win.show();
-            diag_win.set_callback(|_| {});
 
             let (rx, _handle) = downloader::download_default_mmdb();
 
@@ -159,17 +203,123 @@ fn main() {
                     }
                 };
                 *mmdb.borrow_mut() = Some(new_mmdb);
-                buffer.set_text("Ready");
+                // Show metadata when database is loaded
+                match (*mmdb.borrow_mut()).as_mut().unwrap().get_metadata_string() {
+                    Ok(metadata) => {
+                        buffer.set_text(&metadata);
+                    }
+                    Err(err) => {
+                        buffer.set_text(&format!(
+                            "Database loaded, but error getting metadata: {err:?}"
+                        ));
+                    }
+                }
             } else {
                 buffer.set_text(&format!("File does not exist '{value}'"));
             }
         });
 
-        if downloader::default_mmdb_exists() {
-            download_btn.hide();
-            input_bar2.set_value(downloader::default_mmdb_path().to_str().unwrap());
+        let config_db_path = load_config();
+        let db_to_load = match config_db_path {
+            Some(path) if std::path::Path::new(&path).exists() => {
+                download_btn.hide();
+                path
+            }
+            _ => {
+                if downloader::default_mmdb_exists() {
+                    download_btn.hide();
+                    input_bar2.set_value(downloader::default_mmdb_path().to_str().unwrap());
+                    input_bar2.do_callback();
+                    downloader::default_mmdb_path()
+                        .to_string_lossy()
+                        .to_string()
+                } else {
+                    String::new()
+                }
+            }
+        };
+
+        if !db_to_load.is_empty() {
+            input_bar2.set_value(&db_to_load);
             input_bar2.do_callback();
         }
+
+        db_input_bar = input_bar2.clone();
+    }
+
+    {
+        let mut row = Flex::default().row();
+
+        let mut metadata_button = button::Button::default().with_label("Show DB Metadata");
+        row.fixed(&metadata_button, 150);
+
+        let mut save_config_button = button::Button::default().with_label("Save Config");
+        row.fixed(&save_config_button, 120);
+
+        let mut reload_config_button = button::Button::default().with_label("Reload Config");
+        row.fixed(&reload_config_button, 120);
+
+        let mut db_loaded_checkbox = button::CheckButton::default().with_label("Database loaded");
+        db_loaded_checkbox.set_value(false);
+        db_loaded_checkbox.deactivate();
+        row.fixed(&db_loaded_checkbox, 140);
+
+        let query_time_label = fltk::frame::Frame::default().with_label("Query time (ns):");
+        row.fixed(&query_time_label, 120);
+
+        let mut query_time_input = input::Input::default();
+        query_time_input.set_value("0");
+        query_time_input.deactivate();
+        row.fixed(&query_time_input, 80);
+
+        row.end();
+        col.fixed(&row, 30);
+
+        let s = s.clone();
+        metadata_button.set_callback(move |_| {
+            s.send(Message::ShowMetadata);
+        });
+
+        let s = s.clone();
+        save_config_button.set_callback(move |_| {
+            s.send(Message::SaveConfig);
+        });
+
+        let s = s.clone();
+        reload_config_button.set_callback(move |_| {
+            s.send(Message::ReloadConfig);
+        });
+
+        let mmdb = mmdb.clone();
+        let mut db_loaded_checkbox = db_loaded_checkbox.clone();
+        let mut metadata_button = metadata_button.clone();
+        let mut save_config_button = save_config_button.clone();
+        let _reload_config_button = reload_config_button.clone();
+        let last_query_time = last_query_time.clone();
+        let mut query_time_input = query_time_input.clone();
+
+        app::add_idle3(move |_handle| {
+            let is_loaded = mmdb.borrow().is_some();
+            let current_state = db_loaded_checkbox.is_checked();
+            if is_loaded != current_state {
+                db_loaded_checkbox.set_value(is_loaded);
+            }
+
+            // Enable/disable buttons based on database state
+            if is_loaded {
+                metadata_button.activate();
+                save_config_button.activate();
+            } else {
+                metadata_button.deactivate();
+                save_config_button.deactivate();
+            }
+
+            let current_time = *last_query_time.borrow();
+            let displayed_time = query_time_input.value().parse::<u64>().unwrap_or(0);
+            if current_time != displayed_time {
+                query_time_input.set_value(&current_time.to_string());
+            }
+        });
     }
 
     let mut display = text::TextDisplay::default();
@@ -198,13 +348,70 @@ fn main() {
     while app.wait() {
         if let Some(msg) = r.recv() {
             match msg {
+                Message::SaveConfig => {
+                    if let Some(_mmdb) = mmdb.borrow().as_ref() {
+                        // Get the current database path from the input field
+                        let db_path = db_input_bar.value();
+                        if !db_path.is_empty() && std::path::Path::new(&db_path).exists() {
+                            match save_config(&db_path) {
+                                Ok(()) => {
+                                    buffer.set_text("Configuration saved successfully");
+                                }
+                                Err(err) => {
+                                    buffer.set_text(&format!("Error saving configuration: {err}"));
+                                }
+                            }
+                        } else {
+                            buffer.set_text("Cannot save config: no valid database path");
+                        }
+                    } else {
+                        buffer.set_text("Cannot save config: no database loaded");
+                    }
+                }
+                Message::ReloadConfig => {
+                    let config_db_path = load_config();
+                    match config_db_path {
+                        Some(path) if std::path::Path::new(&path).exists() => {
+                            db_input_bar.set_value(&path);
+                            db_input_bar.do_callback();
+                        }
+                        Some(_) => {
+                            buffer.set_text("Configured database path does not exist");
+                        }
+                        None => {
+                            buffer.set_text("No configuration found");
+                        }
+                    }
+                }
+                Message::ShowMetadata => {
+                    if let Some(mmdb) = mmdb.borrow_mut().as_mut() {
+                        match mmdb.get_metadata_string() {
+                            Ok(metadata) => {
+                                buffer.set_text(&metadata);
+                                display.set_insert_position(buffer.length());
+                                display.show_insert_position();
+                            }
+                            Err(err) => {
+                                buffer.set_text(&format!("Error getting metadata: {err:?}"));
+                            }
+                        }
+                    } else {
+                        buffer.set_text("No database loaded to show metadata");
+                    }
+                }
                 Message::SendQuery(msg) => {
                     if let Some(mmdb) = mmdb.borrow_mut().as_mut() {
                         let Ok(ip) = msg.parse::<IpAddr>() else {
                             buffer.set_text(&format!("Invalid IP address format '{msg}'"));
                             continue;
                         };
-                        match mmdb.query_ip(ip) {
+
+                        let start_time = Instant::now();
+                        let result = mmdb.query_ip(ip);
+                        let elapsed_ns = start_time.elapsed().as_nanos() as u64;
+                        *last_query_time.borrow_mut() = elapsed_ns;
+
+                        match result {
                             Ok(res) => match res {
                                 Some(res) => {
                                     buffer.set_text(&format!("{res}"));

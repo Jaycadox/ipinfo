@@ -27,6 +27,7 @@ incremental = false
 byteorder = "1.5.0"
 fltk = { version = "1.5.22", features = ["use-wayland"] }
 fltk-theme = "0.7.9"
+rust-ini = "0.21.0"
 thiserror = "2.0.18"
 tinyget = { version = "1.1.4", features = ["https"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Graphics_Dwm", "Win32_Foundation"] }

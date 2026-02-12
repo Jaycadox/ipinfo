@@ -42,6 +42,45 @@ pub enum MmdbError {
 }
 
 impl<T: Read + Seek> Mmdb<T> {
+    pub fn get_metadata_string(&mut self) -> Result<String, MmdbError> {
+        let current_pos = self.reader.stream_position()?;
+        self.reader.seek(std::io::SeekFrom::End(0))?;
+        let file_size = self.reader.stream_position()?;
+
+        let start_byte = match file_size {
+            0..128_000 => 0,
+            128_000.. => file_size - 128_000,
+        };
+
+        let tail_len = (file_size - start_byte) as usize;
+        let mut contents = vec![0u8; tail_len];
+        self.reader.seek(SeekFrom::Start(start_byte))?;
+        self.reader.read_exact(&mut contents)?;
+
+        static METADATA_MARKER: &[u8] = b"\xAB\xCD\xEFMaxMind.com";
+
+        let Some(marker_pos) = contents
+            .windows(METADATA_MARKER.len())
+            .rposition(|x| x == METADATA_MARKER)
+        else {
+            self.reader.seek(SeekFrom::Start(current_pos))?;
+            return Err(MmdbError::MetadataNotFound);
+        };
+        let marker_pos = marker_pos + METADATA_MARKER.len();
+
+        let mut contents = Cursor::new(contents);
+        contents.seek(SeekFrom::Start(marker_pos as u64))?;
+
+        let typ = read_type(&mut contents, None)?;
+
+        self.reader.seek(SeekFrom::Start(current_pos))?;
+
+        Ok(format!(
+            "---------- MMDB Metadata ----------\n{typ}\n-----------------------------------\nDatabase size: {} bytes",
+            file_size
+        ))
+    }
+
     pub fn new(mut reader: T) -> Result<Mmdb<T>, MmdbError> {
         reader.seek(std::io::SeekFrom::End(0))?;
         let file_size = reader.stream_position()?;
